@@ -46,8 +46,7 @@ class Diffusion(nn.Module):
         self.softplus = torch.nn.Softplus()
 
         # generative perplexity
-        self.dtype = torch.float64
-        # self.gen_ppl_metric = Perplexity()
+        self.dtype = torch.float32
         self.eval_model_tokenizer = AutoTokenizer.from_pretrained(self.gen_ppl_eval_model_name_or_path)
         if self.eval_model_tokenizer.pad_token is None:
             self.eval_model_tokenizer.pad_token =\
@@ -222,10 +221,9 @@ class Diffusion(nn.Module):
 
 
     @torch.no_grad()
-    def _sample(self, num_steps=None, eps=1e-5):
+    def _sample_trajectory(self, num_steps=None, eps=1e-5):
         """Generate samples from the model."""
         batch_size_per_gpu = self.config.loader.eval_batch_size
-        # Lightning auto-casting is not working in this method for some reason
         if num_steps is None:
             num_steps = self.config.sampling.steps
         x = self._sample_prior(
@@ -236,32 +234,80 @@ class Diffusion(nn.Module):
         dt = (1 - eps) / num_steps
         p_x0_cache = None
 
+        samples = []
+        ts = []
+        
         for i in range(num_steps):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-        if self.sampler == 'ddpm':
-            x = self._ddpm_update(x, t, dt)
-        elif self.sampler == 'ddpm_cache':
-            p_x0_cache, x_next = self._ddpm_caching_update(
-            x, t, dt, p_x0=p_x0_cache)
-            if (not torch.allclose(x_next, x)
-                or self.time_conditioning):
-                # Disable caching
-                p_x0_cache = None
-                x = x_next
-        else:
-            x = self._analytic_update(x, t, dt)
+            if self.sampler == 'ddpm':
+                x = self._ddpm_update(x, t, dt)
+            elif self.sampler == 'ddpm_cache':
+                p_x0_cache, x_next = self._ddpm_caching_update(
+                x, t, dt, p_x0=p_x0_cache)
+                if (not torch.allclose(x_next, x) or self.time_conditioning):
+                    # Disable caching
+                    p_x0_cache = None
+                    x = x_next
+            else:
+                x = self._analytic_update(x, t, dt)
+            samples.append(x)
+            ts.append(t)
 
+        # final denoising step
         if self.config.sampling.noise_removal:
             t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
-        if self.sampler == 'analytic':
-            x = self._denoiser_update(x, t)
-        else:
-            unet_conditioning = self.noise(t)[0]
-            x = self.forward(x, unet_conditioning).argmax(dim=-1)
+            if self.sampler == 'analytic':
+                x = self._denoiser_update(x, t)
+            else:
+                unet_conditioning = self.noise(t)[0]
+                x = self.forward(x, unet_conditioning).argmax(dim=-1)
+            samples.append(x)
+            ts.append(t)
+                
+        return samples, ts
+    
+    
+    @torch.no_grad()
+    def _sample(self, num_steps=None, eps=1e-5):
+        """Generate samples from the model."""
+        batch_size_per_gpu = self.config.loader.eval_batch_size
+        if num_steps is None:
+            num_steps = self.config.sampling.steps
+        x = self._sample_prior(
+            batch_size_per_gpu,
+            self.config.model.length
+        ).to(self.device)
+        timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
+        dt = (1 - eps) / num_steps
+        p_x0_cache = None
+        
+        for i in range(num_steps):
+            t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+            if self.sampler == 'ddpm':
+                x = self._ddpm_update(x, t, dt)
+            elif self.sampler == 'ddpm_cache':
+                p_x0_cache, x_next = self._ddpm_caching_update(
+                x, t, dt, p_x0=p_x0_cache)
+                if (not torch.allclose(x_next, x) or self.time_conditioning):
+                    # Disable caching
+                    p_x0_cache = None
+                    x = x_next
+            else:
+                x = self._analytic_update(x, t, dt)
+
+        # final denoising step
+        if self.config.sampling.noise_removal:
+            t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
+            if self.sampler == 'analytic':
+                x = self._denoiser_update(x, t)
+            else:
+                unet_conditioning = self.noise(t)[0]
+                x = self.forward(x, unet_conditioning).argmax(dim=-1)
+
         return x
 
 
-    def restore_model_and_sample(self, num_steps, eps=1e-5):
+    def restore_model_and_sample(self, num_steps, eps=1e-5, store_traj=False):
         """Generate samples from the model."""
         # Lightning auto-casting is not working in this method for some reason
         if self.ema:
@@ -275,13 +321,20 @@ class Diffusion(nn.Module):
             )
         self.backbone.eval()
         self.noise.eval()
-        samples = self._sample(num_steps=num_steps, eps=eps)
+        if store_traj:
+            samples, timesteps = self._sample_trajectory(num_steps=num_steps, eps=eps)
+        else:
+            samples = self._sample(num_steps=num_steps, eps=eps)
         if self.ema:
             self.ema.restore(itertools.chain(
             self.backbone.parameters(),
             self.noise.parameters()))
         self.backbone.train()
         self.noise.train()
+        
+        if store_traj:
+            return samples, timesteps
+        
         return samples
     
     
@@ -304,8 +357,7 @@ class Diffusion(nn.Module):
         
         # Normalize the logits such that x.exp() is
         # a probability distribution over vocab_size.
-        logits = logits - torch.logsumexp(logits, dim=-1,
-                                        keepdim=True)
+        logits = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
 
         # Apply updates directly in the logits matrix.
         # For the logits of the unmasked tokens, set all values
