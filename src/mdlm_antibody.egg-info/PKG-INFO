@@ -1,0 +1,53 @@
+Metadata-Version: 2.4
+Name: mdlm_antibody
+Version: 0.1.0
+Summary: masked text diffusion model for antibody sequences
+Author: Feiyang Huang
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch==2.6.0
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: einops
+Requires-Dist: scikit-learn
+Requires-Dist: attrs
+Requires-Dist: transformers
+Requires-Dist: hydra-core
+Requires-Dist: wandb
+Requires-Dist: tqdm
+Requires-Dist: ImmuneBuilder
+Requires-Dist: py3Dmol
+Requires-Dist: notebook
+Requires-Dist: kasearch
+Requires-Dist: huggingface_hub[torch]
+Requires-Dist: jupyterlab
+
+# Installations
+```bash
+conda create -n mdlm python=3.10
+conda activate mdlm
+pip install -e .
+pip install flash_attn==2.7.4.post1
+```
+
+### Additional dependencies
+```bash
+conda install -c conda-forge openmm pdbfixer
+conda install -c bioconda anarci
+```
+
+### Download index of Observed Antibody Space
+```bash
+wget -qnc "https://zenodo.org/record/7562025/files/OAS-aligned-small.tar" -O small_OAS.tar
+tar -xf small_OAS.tar
+```
+Note: The full OAS index (2.4B sequences) takes 68GB and around 30mins to search per entry. Stick with the small index (86M sequences) for now
+
+
+# Druggability
+5 druggability metrics can be calculated with the [Therapeutic Antibody Profiler (TAP)](https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabpred/tap) using their web portal. Can't find an API. Sad
+
+
+# Structure visualization
+* ImmuneBuilder: Run [visualization.ipynb](visualizer.ipynb) to visualize ImmuneBuilder predicted structure. 
+* Boltz: TODO

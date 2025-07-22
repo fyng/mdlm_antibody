@@ -1,0 +1,16 @@
+torch==2.6.0
+numpy
+pandas
+einops
+scikit-learn
+attrs
+transformers
+hydra-core
+wandb
+tqdm
+ImmuneBuilder
+py3Dmol
+notebook
+kasearch
+huggingface_hub[torch]
+jupyterlab
