@@ -201,3 +201,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+boltz/
+output/
+log/
+data/
+wandb/
+*.wandb

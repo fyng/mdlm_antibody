@@ -1,12 +1,11 @@
 import itertools
-
+import omegaconf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForMaskedLM, AutoTokenizer
-import noise_schedule
-import models
-
+from . import noise_schedule
+from .models import DIT, ExponentialMovingAverage
 
 class Diffusion(nn.Module):
     def __init__(
@@ -16,15 +15,14 @@ class Diffusion(nn.Module):
         device: str,
     ):
         super().__init__()
+        if type(config) == dict:
+            config = omegaconf.OmegaConf.create(config)
         self.config = config
         self.device = device
         self.tokenizer = tokenizer
         self.vocab_size = self.tokenizer.vocab_size
         self.sampler = self.config.sampling.predictor
         self.gen_ppl_eval_model_name_or_path = self.config.eval.gen_ppl_eval_model_name_or_path
-        self.antithetic_sampling = self.config.training.antithetic_sampling
-        self.importance_sampling = self.config.training.importance_sampling
-        self.change_of_variables = self.config.training.change_of_variables
         if (not hasattr(self.tokenizer, 'mask_token')
             or self.tokenizer.mask_token is None):
             self.mask_index = self.vocab_size
@@ -33,7 +31,7 @@ class Diffusion(nn.Module):
             self.mask_index = self.tokenizer.mask_token_id
         self.parameterization = self.config.parameterization
         if self.config.backbone == 'dit':
-            self.backbone = models.dit.DIT(self.config, vocab_size=self.vocab_size)
+            self.backbone = DIT(self.config, vocab_size=self.vocab_size)
         elif self.config.backbone == 'hf_dit':
             self.backbone = AutoModelForMaskedLM.from_pretrained(
             config.eval.checkpoint_path, trust_remote_code=True)
@@ -44,30 +42,34 @@ class Diffusion(nn.Module):
         self.subs_masking = self.config.subs_masking
 
         self.softplus = torch.nn.Softplus()
-
-        # generative perplexity
         self.dtype = torch.float32
-        self.eval_model_tokenizer = AutoTokenizer.from_pretrained(self.gen_ppl_eval_model_name_or_path)
-        if self.eval_model_tokenizer.pad_token is None:
-            self.eval_model_tokenizer.pad_token =\
-                self.eval_model_tokenizer.eos_token
-            self.eval_model_tokenizer.pad_token_id =\
-                self.eval_model_tokenizer.eos_token_id
 
         self.noise = noise_schedule.get_noise(self.config, dtype=self.dtype)
         if self.config.training.ema > 0:
-            self.ema = models.ema.ExponentialMovingAverage(
+            self.ema = ExponentialMovingAverage(
                 itertools.chain(self.backbone.parameters(), self.noise.parameters()),
                 decay=self.config.training.ema)
         else:
             self.ema = None
         
-        self.lr = self.config.optim.lr
         self.sampling_eps = self.config.training.sampling_eps
         self.time_conditioning = self.config.time_conditioning
         self.neg_infinity = -1000000.0
-        self.fast_forward_epochs = None
-        self.fast_forward_batches = None
+
+
+    def forward(self, x, sigma):
+        sigma = self._process_sigma(sigma)
+        with torch.amp.autocast(self.device, dtype=torch.float32):
+            logits = self.backbone(x, sigma)
+        
+        if self.parameterization == 'subs':
+            return self._subs_parameterization(logits=logits, xt=x)
+        else:
+            raise NotImplementedError(
+                f'Unknown parameterization: {self.parameterization}'
+            )
+        
+        return logits
 
 
     def _sample_prior(self, *batch_dims):
@@ -305,37 +307,6 @@ class Diffusion(nn.Module):
                 x = self.forward(x, unet_conditioning).argmax(dim=-1)
 
         return x
-
-
-    def restore_model_and_sample(self, num_steps, eps=1e-5, store_traj=False):
-        """Generate samples from the model."""
-        # Lightning auto-casting is not working in this method for some reason
-        if self.ema:
-            self.ema.store(itertools.chain(
-                self.backbone.parameters(),
-                self.noise.parameters())
-            )
-            self.ema.copy_to(itertools.chain(
-                self.backbone.parameters(),
-                self.noise.parameters())
-            )
-        self.backbone.eval()
-        self.noise.eval()
-        if store_traj:
-            samples, timesteps = self._sample_trajectory(num_steps=num_steps, eps=eps)
-        else:
-            samples = self._sample(num_steps=num_steps, eps=eps)
-        if self.ema:
-            self.ema.restore(itertools.chain(
-            self.backbone.parameters(),
-            self.noise.parameters()))
-        self.backbone.train()
-        self.noise.train()
-        
-        if store_traj:
-            return samples, timesteps
-        
-        return samples
     
     
     def _process_sigma(self, sigma):
@@ -369,16 +340,131 @@ class Diffusion(nn.Module):
         return logits
     
     
-    def forward(self, x, sigma):
-        sigma = self._process_sigma(sigma)
-        with torch.amp.autocast(self.device, dtype=torch.float32):
-            logits = self.backbone(x, sigma)
+    def _q_xt(
+        self,         
+        move_chance,
+        batch: torch.Tensor,
+    ):
+        """
+        Calculate noisy sample at x_t 
+        """
+        move_indices = torch.rand(* batch.shape, device=batch.device) < move_chance
+        return torch.where(move_indices, self.mask_index, batch)
+    
+    
+    def _subs_continuous(
+        self, 
+        x0: torch.Tensor, 
+        model_output: torch.Tensor,
+        sigma,
+        dsigma,
+    ) -> torch.Tensor:
+        # TODO: check this is correct
+        # SUBS parameterization, continuous time.
+        log_p_theta = torch.gather(
+            input=model_output,
+            dim=-1,
+            index=x0[:, :, None].type(torch.long) # expect int64 for index
+        ).squeeze(-1)
         
-        if self.parameterization == 'subs':
-            return self._subs_parameterization(logits=logits, xt=x)
-        else:
-            raise NotImplementedError(
-                f'Unknown parameterization: {self.parameterization}'
+        # # importance sampling correction
+        # return log_p_theta * torch.log1p(-torch.exp(-self.noise.sigma_min))
+        
+        return - log_p_theta * (dsigma / torch.expm1(sigma))[:, None]
+    
+    
+    def restore_model_and_sample(self, num_steps, eps=1e-5, store_traj=False):
+        """Generate samples from the model."""
+        # Lightning auto-casting is not working in this method for some reason
+        if self.ema:
+            self.ema.store(itertools.chain(
+                self.backbone.parameters(),
+                self.noise.parameters())
             )
+            self.ema.copy_to(itertools.chain(
+                self.backbone.parameters(),
+                self.noise.parameters())
+            )
+        self.backbone.eval()
+        self.noise.eval()
+        if store_traj:
+            samples, timesteps = self._sample_trajectory(num_steps=num_steps, eps=eps)
+        else:
+            samples = self._sample(num_steps=num_steps, eps=eps)
+        if self.ema:
+            self.ema.restore(itertools.chain(
+            self.backbone.parameters(),
+            self.noise.parameters()))
+        self.backbone.train()
+        self.noise.train()
         
-        return logits
+        if store_traj:
+            return samples, timesteps
+        
+        return samples
+    
+    
+    def train(self, mode: bool = True):
+        self.backbone.train(mode)
+        self.noise.train(mode)
+        return self
+
+
+    def eval(self):
+        self.backbone.eval()
+        self.noise.eval()
+        return self
+        
+        
+    def forward_pass_diffusion(self, batch):
+        bsz = batch.shape[0]
+        eps_t = torch.rand(bsz, device=batch.device)
+
+        # Low discrepency sampler aka antithetic_sampling (appendix C3 in paper)
+        offset = torch.arange(bsz, device=self.device) / bsz
+        eps_t = (eps_t / bsz + offset) % 1
+        t = (1 - self.sampling_eps) * eps_t + self.sampling_eps
+        
+        # # importance smapling
+        # t = self.noise.importance_sampling_transformation(eps_t)
+        # # TODO: add finite T timestep 
+    
+        sigma, dsigma = self.noise(t)
+        conditioning = sigma[:, None]
+        move_chance = 1 - torch.exp(-sigma[:, None]) # 1 - alpha_t
+        
+        batch_xt = self._q_xt(move_chance, batch)
+        batch_logits = self.forward(batch_xt, conditioning)
+        loss = self._subs_continuous(batch, batch_logits, sigma, dsigma)
+        
+        return loss
+    
+    
+    def save(self, path):
+        """Save the model to a file."""
+        state_dict = {
+            'backbone': self.backbone.state_dict(),
+            'noise': self.noise.state_dict(),
+            'config': self.config,
+        }
+        torch.save(state_dict, path)
+        print(f"Model saved to {path}")
+        
+        
+    @classmethod
+    def load(cls, path, tokenizer, device):
+        """Load the model from a file."""
+        state_dict = torch.load(path, map_location=device)
+        config = state_dict['config']
+        
+        # Create new instance with loaded config
+        model = cls(config, tokenizer, device)
+        
+        # Load the state dictionaries
+        model.backbone.load_state_dict(state_dict['backbone'])
+        model.noise.load_state_dict(state_dict['noise'])
+        
+        print(f"Model loaded from {path}")
+        return model
+        
+        
