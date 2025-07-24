@@ -229,16 +229,14 @@ class Diffusion(nn.Module):
         if num_steps is None:
             num_steps = self.config.sampling.steps
         x = self._sample_prior(
-            batch_size_per_gpu,
-            self.config.model.length
-        ).to(self.device)
+            batch_size_per_gpu, 
+            self.config.model.length).to(self.device)
         timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
         dt = (1 - eps) / num_steps
         p_x0_cache = None
 
         samples = []
         ts = []
-        
         for i in range(num_steps):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
             if self.sampler == 'ddpm':
@@ -246,7 +244,9 @@ class Diffusion(nn.Module):
             elif self.sampler == 'ddpm_cache':
                 p_x0_cache, x_next = self._ddpm_caching_update(
                 x, t, dt, p_x0=p_x0_cache)
-                if (not torch.allclose(x_next, x) or self.time_conditioning):
+                
+                # check if the next sample is different from the current one
+                if (not torch.allclose(x_next, x) or self.time_conditioning):        
                     # Disable caching
                     p_x0_cache = None
                     x = x_next
