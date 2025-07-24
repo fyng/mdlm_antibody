@@ -17,11 +17,11 @@ noise:
 training:
   mode: train  # 'train' | 'sample'
   epochs: 5
-  num_workers: 2
+  num_workers: 8
   ema: 0 # disable weights EMA
   sampling_eps: 1e-3
   change_of_variables: False
-  batch_size: 256
+  batch_size: 384
 
 eval:
   checkpoint_path: ''  # Used to evaluate a checkpoint after training.
@@ -34,8 +34,8 @@ eval:
   
 # Optimizer settings
 optimizer:
-  lr: 1e-3
-  warmup_steps: 5000  # Number of steps for linear warmup
+  lr: 1e-5
+  warmup_steps: 1000  # Number of steps for linear warmup
   betas: [0.9, 0.95]
   weight_decay: 0.01
   grad_clip: 1.0
@@ -45,17 +45,19 @@ optimizer:
 model:
   hidden_size: 768
   cond_dim: 128
-  length: 8
+  length: 288 # 288 for imgt, 299 for aho
   n_blocks: 12
   n_heads: 12
   scale_by_sigma: true
   dropout: 0.1
   tie_word_embeddings: false
-  max_len: 384  # 280 for imgt, 299 for aho
 
 # Sampling settings
 sampling:
-  num_steps: 128
+  steps: 128
   store_traj: false
   predictor: ddpm_cache  # analytic, ddpm, ddpm_cache
+  noise_removal: True
 
+loader:
+  eval_batch_size: 64

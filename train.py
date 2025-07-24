@@ -26,7 +26,7 @@ def main():
     
     # Data loader
     oas_data = OASDataModule()
-    data_file = Path('data/processed/poas_human_all_aho.pkl')
+    data_file = Path('data/processed/poas_human_all_imgt_split.pkl')
     if not data_file.exists():
         raise FileNotFoundError(f"Data file {data_file} not found. Run preprocess.py first.")
     oas_data.load_saved(data_file)
@@ -37,7 +37,7 @@ def main():
     config = omegaconf.OmegaConf.load(args.config)
     assert config.model.hidden_size % config.model.n_heads == 0 # d_model must be divisible by n_heads
     
-    max_len = config.model.max_len
+    max_len = config.model.length
     tokenizer = ProteinTokenizer()    
     train_loader = DataLoader(
         tokenizer.batch_tokenize_pad(data=train_data, max_len=max_len),
@@ -72,32 +72,38 @@ def main():
         print(f"Epoch {epoch+1}/{config.training.epochs}")
         train_loss = trainer.fit(train_loader)
         test_loss = trainer.validate(test_loader)
+        wandb.log({
+            'test_loss': test_loss,
+            'epoch': epoch,
+        })
 
         # CALCULATE METRICS
         seq_list = []
-        # sample 100 sequences
-        for _ in tqdm(range(100)):
-            seq = diffusion_model.restore_model_and_sample(
-                num_steps = 1000,
-                store_traj = False
-            )
-            seq_list.append(seq)
+        # a few batches
+        with torch.no_grad():
+            for _ in tqdm(range(10)):
+                seq = diffusion_model.restore_model_and_sample(
+                    num_steps = 1000,
+                    store_traj = False
+                )
+                seq_list.append(seq)
         seq_tokens = torch.cat(seq_list)
         vdj_tokens = None
         anarci_tokens = None
         proteins = tokenizer.batch_detokenize(seq_tokens, vdj_tokens, anarci_tokens)
 
-        success = 0
         sample_dict=[]
         with open(f'output/sample_epoch{epoch}.txt', 'w') as f:
             for i, p in enumerate(proteins):
-                f.write(f"{p.sequence}'\n'")
-                f.write(f"{p.vdj_label}'\n'")
-                f.write(f"{p.anarci_label}'\n'")
                 # strict version of parsing function:
+                vl, vh = p.to_aa()
+                f.write(f"{vl}|{vh}'\n'")
+                protein_dict = {
+                    'VL': vl,
+                    'VH': vh,
+                }
+                # align with anarci
                 try:
-                    vl, vh = p.to_aa(format='aho')
-                    # align with anarci
                     _, chain1 = number(vl)
                     _, chain2 = number(vh)
                     if not chain1 and chain2:         
@@ -109,22 +115,17 @@ def main():
                         searchdb.search(aligned)
                         res = searchdb.current_best_identities # this automatically resets at the next search()
                         res = np.max(res, axis=1) # take best metric found
-                        
-                        sample_dict.append({
-                            "VL": vl,
-                            "VH": vh,
+                        protein_dict.update({
                             "VL_similarity_cdr": res[0][0],
                             "VL_similarity_cdr3": res[0][1],
                             "VH_similarity_cdr": res[1][0],
                             "VH_similarity_cdr3": res[1][1],
-                            # "file_path": pdb_fp,
                         })
                         
                         # write to yaml file for boltz
                         yaml_data = {
                             "version": 1,
-                            "sequences": [
-                                {
+                            "sequences": [{
                                     "protein": {
                                         "id": "VL",
                                         "sequence": vl
@@ -138,26 +139,23 @@ def main():
                                 }
                             ]
                         }
-                        
                         yaml_filename = f'output/yaml/epoch{epoch}_sample{i}.yaml'
                         with open(yaml_filename, 'w') as yaml_file:
                             yaml.dump(yaml_data, yaml_file, default_flow_style=False, sort_keys=False)
                     except KeyError as e:
                         print(f"Missing sequence from chain {str(e)}")
-                except:
-                    continue    
+                except AssertionError as e:
+                    print(f"Error processing protein {i}: {e}")
+                    continue
+                    
+                sample_dict.append(protein_dict)
+
         df = pd.DataFrame(sample_dict)
         df.to_csv(f'output/sample_epoch{epoch}.csv', index=False)
     
-        # log validation metrics
-        wandb.log({
-            'test_loss': test_loss,
-            'epoch': epoch,
-        })
-        
         # save model weights
-        diffusion_model.save(f"model_weights/diffusion_epoch_{epoch}.pt")
+        diffusion_model.save(f"output/model_weights/diffusion_epoch_{epoch}.pt")
     
-    
+
 if __name__ == "__main__":
     main()

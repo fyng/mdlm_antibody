@@ -1,23 +1,15 @@
-BOS_TOKEN = 0
-PAD_TOKEN = 1
-EOS_TOKEN = 2
-MASK_TOKEN = 3 
-CHAIN_BREAK_TOKEN = 4
-UNK_TOKEN = 8
+PAD_TOKEN = 0
+MASK_TOKEN = 1 
 
-BOS_STR = "<cls>"
 PAD_STR = "-"
-EOS_STR = "<eos>"
-UNK_STR = "<unk>"
 MASK_STR = "<mask>"
-CHAIN_BREAK_STR = "|"
 
-SEQUENCE_VOCAB_SIZE = 25
-VDJ_VOCAB_SIZE = 9
-ANARCI_VOCAB_SIZE = 45
+SEQUENCE_VOCAB_SIZE = 22
+VDJ_VOCAB_SIZE = 5
+ANARCI_VOCAB_SIZE = 42
 
 SEQUENCE_VOCAB = [
-    "<cls>", "-", "<eos>", "<mask>", "|",
+    "-", "<mask>",
     "L", "A", "G", "V", "S", 
     "E", "R", "T", "I", "D", 
     "P", "K", "Q", "N", "F", 
@@ -25,12 +17,12 @@ SEQUENCE_VOCAB = [
 ]
 
 VDJ_VOCAB = [
-    "<cls>", "-", "<eos>", "<mask>", "|",
-    "V", "D", "J", "<unk>"
+    "-", "<mask>",
+    "V", "D", "J"
 ]
 
 ANARCI_VOCAB = [
-    "<cls>", "-", "<eos>", "<mask>", "|",
+    "-", "<mask>",
     "fwk1", "fwk2", "fwk3", "fwk4",   
     "cdrk1", "cdrk2", "cdrk3", "cdrk4",
     "fwl1", "fwl2", "fwl3", "fwl4",   
@@ -42,4 +34,3 @@ ANARCI_VOCAB = [
     "fwb1", "fwb2", "fwb3", "fwb4",   
     "cdrb1", "cdrb2", "cdrb3", "cdrb4",
 ]
-

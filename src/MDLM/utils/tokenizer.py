@@ -11,55 +11,99 @@ class ProteinTokenizer():
         self.anarci_dict = {k: v for v, k in enumerate(V.ANARCI_VOCAB)}
         self.mask_token = V.MASK_STR
         self.mask_token_id = V.MASK_TOKEN
-        self.vocab_size = len(self.seq_dict)
+        self.vocab_size = V.SEQUENCE_VOCAB_SIZE
 
+    def _post_pad(
+        self,
+        x: list[str],
+        max_len: int,
+    ) -> list[str]:
+        return x + [V.PAD_STR] * (max_len - len(x))
+    
     def pad(
         self, 
         data: Protein, 
         max_len: int
     ) -> Protein:
-        seq = data.sequence + ([V.PAD_STR] * (max_len - len(data.sequence) - 2))
-        vdj = data.vdj_label + [V.PAD_STR] * (max_len - len(data.vdj_label) - 2)
-        anarci = data.anarci_label + [V.PAD_STR] * (max_len - len(data.anarci_label) - 2)
-        return Protein(seq, vdj, anarci)
+        if data.scheme == 'imgt':
+            vl_len = 128
+            vh_len = 160
+            # TODO: lift to params
+            return Protein(
+                vl_sequence=self._post_pad(data.vl_sequence, vl_len),
+                vh_sequence=self._post_pad(data.vh_sequence, vh_len),
+                vl_vdj=self._post_pad(data.vl_vdj, vl_len),
+                vh_vdj=self._post_pad(data.vh_vdj, vh_len),
+                vl_region=self._post_pad(data.vl_region, vl_len),
+                vh_region=self._post_pad(data.vh_region, vh_len),
+                vl_pos=[],
+                vh_pos=[],
+                scheme=data.scheme
+            )            
+        else:
+            raise NotImplementedError(f"Padding for {data.scheme} scheme not implemented")
 
-    def tokenize(
+
+    def _depad(
+        self,
+        x: Protein,
+    ) -> Protein:
+        x.vl_sequence = [s for s in x.vl_sequence if s != V.PAD_STR]
+        x.vh_sequence = [s for s in x.vh_sequence if s != V.PAD_STR]
+        x.vl_vdj = [s for s in x.vl_vdj if s != V.PAD_STR]
+        x.vh_vdj = [s for s in x.vh_vdj if s != V.PAD_STR]
+        x.vl_region = [s for s in x.vl_region if s != V.PAD_STR]
+        x.vh_region = [s for s in x.vh_region if s != V.PAD_STR]
+        return x 
+
+
+    def _tokenize(
         self, 
         data: Protein, 
         to_tensor=True,
     ) -> tuple[torch.Tensor|np.ndarray, torch.Tensor|np.ndarray, torch.Tensor|np.ndarray]:
         if to_tensor:
-            seq_token = torch.tensor([self.seq_dict[s] for s in data.sequence], dtype=torch.int32)
-            vdj_token = torch.tensor([self.vdj_dict[s] for s in data.vdj_label], dtype=torch.int32)
-            anarci_token = torch.tensor([self.anarci_dict[s] for s in data.anarci_label], dtype=torch.int32)
+            seq_token = torch.tensor([self.seq_dict[s] for s in data.vl_sequence] + [self.seq_dict[s] for s in data.vh_sequence], dtype=torch.int32)
+            vdj_token = torch.tensor([self.vdj_dict[s] for s in data.vl_vdj] + [self.vdj_dict[s] for s in data.vh_vdj], dtype=torch.int32)
+            label_token = torch.tensor([self.anarci_dict[s] for s in data.vl_region] + [self.anarci_dict[s] for s in data.vh_region], dtype=torch.int32)
         else:
-            seq_token = np.array([self.seq_dict[s] for s in data.sequence], dtype='int')
-            vdj_token = np.array([self.vdj_dict[s] for s in data.vdj_label], dtype='int')
-            anarci_token = np.array([self.anarci_dict[s] for s in data.anarci_label], dtype='int')
+            seq_token = np.array([self.seq_dict[s] for s in data.vl_sequence] + [self.seq_dict[s] for s in data.vh_sequence], dtype='int')
+            vdj_token = np.array([self.vdj_dict[s] for s in data.vl_vdj] + [self.vdj_dict[s] for s in data.vh_vdj], dtype='int')
+            label_token = np.array([self.anarci_dict[s] for s in data.vl_region] + [self.anarci_dict[s] for s in data.vh_region], dtype='int')
 
-        return seq_token, vdj_token, anarci_token
+        return seq_token, vdj_token, label_token
 
-    def detokenize(
+
+    def _detokenize(
         self, 
         seq_token: torch.Tensor, 
         vdj_token: torch.Tensor | None, 
         anarci_token: torch.Tensor | None,
-        ) -> Protein:
+    ) -> Protein:
         sequence = [V.SEQUENCE_VOCAB[int(s)] for s in seq_token] 
         vdj_label = [V.VDJ_VOCAB[int(s)] for s in vdj_token] if vdj_token is not None else []
         anarci_label = [V.ANARCI_VOCAB[int(s)] for s in anarci_token] if anarci_token is not None else []
-
+        
+        # TODO: list IMGT specific params to config level
         return Protein(
-            sequence=sequence, 
-            vdj_label=vdj_label, 
-            anarci_label=anarci_label
+            vl_sequence = sequence[:128],
+            vh_sequence = sequence[128:],
+            vl_vdj = vdj_label[:128],
+            vh_vdj = vdj_label[128:],
+            vl_region = anarci_label[:128],
+            vh_region = anarci_label[128:],
+            vl_pos = [],
+            vh_pos = [],
+            scheme='imgt'
         )
+        
         
     def batch_detokenize(
         self, 
         seq_token: torch.Tensor,
         vdj_token: torch.Tensor | None = None,
         anarci_token: torch.Tensor | None = None,
+        remove_padding: bool = True
     ) -> list[Protein]:
         # debatch x [n_batch, ...] -> a list of n_batch Protein objects
         seq_debatched = torch.unbind(seq_token, dim=0)
@@ -74,10 +118,13 @@ class ProteinTokenizer():
             anarci_debatched = torch.unbind(anarci_token, dim=0)
         else: 
             anarci_debatched = [None] * n_batch
+
+        proteins = [self._detokenize(s, v, a) for s,v,a in zip(seq_debatched, vdj_debatched, anarci_debatched)]        
+        if not remove_padding:
+            return proteins
+        return [self._depad(p) for p in proteins]
         
-        return [self.detokenize(s, v, a) for s,v,a in zip(seq_debatched, vdj_debatched, anarci_debatched)]
-        
-    
+ 
     def pad_tokenize(
         self, 
         data: Protein, 
@@ -85,7 +132,7 @@ class ProteinTokenizer():
         to_tensor: bool=True
     ) -> tuple[torch.Tensor|np.ndarray, torch.Tensor|np.ndarray, torch.Tensor|np.ndarray]:
         data = self.pad(data=data, max_len=max_len)
-        return self.tokenize(data, to_tensor=to_tensor)
+        return self._tokenize(data, to_tensor=to_tensor)
         
         
     def mask_tokenize_pad(
@@ -96,7 +143,7 @@ class ProteinTokenizer():
         to_tensor: bool = True,
     ) -> tuple[torch.Tensor|np.ndarray, torch.Tensor|np.ndarray, torch.Tensor|np.ndarray, torch.Tensor|np.ndarray, torch.Tensor|np.ndarray, torch.Tensor|np.ndarray]:
         seq_token, vdj_token, anarci_token = self.pad_tokenize(data=protein, max_len=max_len, to_tensor=False,)
-        
+             
         seq_mask = np.copy(seq_token)
         vdj_mask = np.copy(vdj_token)
         anarci_mask = np.copy(anarci_token)
@@ -124,6 +171,7 @@ class ProteinTokenizer():
             seq_token, vdj_token, anarci_token, 
             seq_mask, vdj_mask, anarci_mask
         )
+
 
     def batch_tokenize_pad(
         self, 

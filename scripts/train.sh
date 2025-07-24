@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
-#SBATCH --time=5:00:00
+#SBATCH --time=4:00:00
 #SBATCH --output=log/train.out
 #SBATCH --error=log/train.err
 

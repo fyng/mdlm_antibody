@@ -29,7 +29,8 @@ tar -xf small_OAS.tar
 Note: The full OAS index (2.4B sequences) takes 68GB and around 30mins to search per entry. Stick with the small index (86M sequences) for now
 
 
-# Structure Prediction
+# Metrics
+
 ### Structure prediction with Boltz-2
 [Boltz-2](https://github.com/jwohlwend/boltz/tree/main) is a SOTA open-sourced protein structure prediction model. Boltz currently uses an old version of flash-attention. It is easiest to make a separate environment for running boltz
 ```bash
@@ -41,17 +42,14 @@ pip install boltz[cuda]
 boltz predict test_protein.yaml --use_msa_server --cache ./boltz --out_dir ./output/boltz/
 ```
 
-For subsequent runs, use this script
+For subsequent runs, save each antibody as a `.yaml` file in `output/yaml/`. Run the structure prediction script. The output will be saved to `output/boltz/`.
+```bash
+sbatch scripts/predict_structures.sh
 ```
 
-```
+Predictions can be visualized with `structure_viz.ipynb`.
 
 
-### [OLD] Structure prediction with ImmuneBuilder
-* ImmuneBuilder: Run [visualization.ipynb](visualizer.ipynb) to visualize ImmuneBuilder predicted structure. 
-
-
-# Other metrics
 ### Druggability
 5 druggability metrics can be calculated with the [Therapeutic Antibody Profiler (TAP)](https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabpred/tap) using their web portal. Can't find an API 😢
 
