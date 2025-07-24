@@ -340,11 +340,7 @@ class Diffusion(nn.Module):
         return logits
     
     
-    def _q_xt(
-        self,         
-        move_chance,
-        batch: torch.Tensor,
-    ):
+    def _q_xt(self, move_chance, batch: torch.Tensor):
         """
         Calculate noisy sample at x_t 
         """
@@ -359,7 +355,6 @@ class Diffusion(nn.Module):
         sigma,
         dsigma,
     ) -> torch.Tensor:
-        # TODO: check this is correct
         # SUBS parameterization, continuous time.
         log_p_theta = torch.gather(
             input=model_output,
@@ -367,10 +362,46 @@ class Diffusion(nn.Module):
             index=x0[:, :, None].type(torch.long) # expect int64 for index
         ).squeeze(-1)
         
-        # # importance sampling correction
-        # return log_p_theta * torch.log1p(-torch.exp(-self.noise.sigma_min))
-        
+        # a' / (1 - a) * log_p_theta
         return - log_p_theta * (dsigma / torch.expm1(sigma))[:, None]
+        
+        
+    def forward_pass_diffusion(self, batch):
+        # Low discrepancy sampling
+        # partition unit interval into bsz parts and sample timestep from each
+        # instead of sampling uniform distribution directly
+        bsz = batch.shape[0]
+        eps_t = torch.rand(bsz, device=batch.device)
+        offset = torch.arange(bsz, device=self.device) / bsz
+        eps_t = (eps_t / bsz + offset) % 1
+        t = (1 - self.sampling_eps) * eps_t + self.sampling_eps
+    
+        # log-linear noise
+        sigma, dsigma = self.noise(t)
+        conditioning = sigma[:, None]
+        move_chance = 1 - torch.exp(-sigma[:, None]) # 1 - alpha_t
+        
+        # create noisy sample at x_t using forward process
+        batch_xt = self._q_xt(move_chance, batch)
+
+        # p_theta(x | x_t, t)
+        batch_logits = self.forward(batch_xt, conditioning)
+    
+        loss = self._subs_continuous(batch, batch_logits, sigma, dsigma)
+        
+        return loss
+    
+    
+    def train(self, mode: bool = True):
+        self.backbone.train(mode)
+        self.noise.train(mode)
+        return self
+
+
+    def eval(self):
+        self.backbone.eval()
+        self.noise.eval()
+        return self
     
     
     def restore_model_and_sample(self, num_steps, eps=1e-5, store_traj=False):
@@ -402,42 +433,6 @@ class Diffusion(nn.Module):
             return samples, timesteps
         
         return samples
-    
-    
-    def train(self, mode: bool = True):
-        self.backbone.train(mode)
-        self.noise.train(mode)
-        return self
-
-
-    def eval(self):
-        self.backbone.eval()
-        self.noise.eval()
-        return self
-        
-        
-    def forward_pass_diffusion(self, batch):
-        bsz = batch.shape[0]
-        eps_t = torch.rand(bsz, device=batch.device)
-
-        # Low discrepency sampler aka antithetic_sampling (appendix C3 in paper)
-        offset = torch.arange(bsz, device=self.device) / bsz
-        eps_t = (eps_t / bsz + offset) % 1
-        t = (1 - self.sampling_eps) * eps_t + self.sampling_eps
-        
-        # # importance smapling
-        # t = self.noise.importance_sampling_transformation(eps_t)
-        # # TODO: add finite T timestep 
-    
-        sigma, dsigma = self.noise(t)
-        conditioning = sigma[:, None]
-        move_chance = 1 - torch.exp(-sigma[:, None]) # 1 - alpha_t
-        
-        batch_xt = self._q_xt(move_chance, batch)
-        batch_logits = self.forward(batch_xt, conditioning)
-        loss = self._subs_continuous(batch, batch_logits, sigma, dsigma)
-        
-        return loss
     
     
     def save(self, path):

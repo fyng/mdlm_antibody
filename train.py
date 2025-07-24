@@ -77,17 +77,12 @@ def main():
             'epoch': epoch,
         })
 
-        # CALCULATE METRICS
-        seq_list = []
-        # a few batches
+        # sample 1 batch and calculate metrics
         with torch.no_grad():
-            for _ in tqdm(range(10)):
-                seq = diffusion_model.restore_model_and_sample(
-                    num_steps = 1000,
-                    store_traj = False
-                )
-                seq_list.append(seq)
-        seq_tokens = torch.cat(seq_list)
+            seq_tokens = diffusion_model.restore_model_and_sample(
+                num_steps = 1000,
+                store_traj = False
+            )
         vdj_tokens = None
         anarci_tokens = None
         proteins = tokenizer.batch_detokenize(seq_tokens, vdj_tokens, anarci_tokens)
@@ -142,11 +137,10 @@ def main():
                         yaml_filename = f'output/yaml/epoch{epoch}_sample{i}.yaml'
                         with open(yaml_filename, 'w') as yaml_file:
                             yaml.dump(yaml_data, yaml_file, default_flow_style=False, sort_keys=False)
-                    except KeyError as e:
-                        print(f"Missing sequence from chain {str(e)}")
-                except AssertionError as e:
-                    print(f"Error processing protein {i}: {e}")
-                    continue
+                    except Exception as e:
+                        print(f'KA search error: {e}')
+                except Exception as e:
+                    print(f'Decoding error: {e}')
                     
                 sample_dict.append(protein_dict)
 

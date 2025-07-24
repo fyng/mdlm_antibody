@@ -13,6 +13,9 @@ noise:
   sigma_min: 1e-4
   sigma_max: 20
 
+loader:
+  eval_batch_size: 64
+
 # Training configuration
 training:
   mode: train  # 'train' | 'sample'
