@@ -63,4 +63,4 @@ sampling:
   noise_removal: True
 
 loader:
-  eval_batch_size: 64
+  eval_batch_size: 32

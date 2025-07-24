@@ -16,7 +16,7 @@ import tokenizers
 import torch
 import transformers
 
-import utils
+from . import utils
 
 def wt_detokenizer(string):
   # contractions
